@@ -27,6 +27,7 @@ This step captures sign language sequences and saves them as .npy landmark files
 ## 📸 A webcam window will appear.
 You'll be prompted to perform each sign for a few seconds (default: 30 frames per video, 30 videos per sign).
 Repeat each sign when asked.
+
 🔹 2. Train the Model
 
 Once your dataset is collected:
