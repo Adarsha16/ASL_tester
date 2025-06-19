@@ -2,3 +2,12 @@
 /env
 asl_model.h5
 classes.npy
+/TGCN
+/videos
+/best_asl_model.h5
+/requirements.txt
+/WLASL_v0.3.json
+/train_iqr.npy
+/train_median.npy
+/train_mean.npy
+/train_std.npy

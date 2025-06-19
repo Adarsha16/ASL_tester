@@ -17,7 +17,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCh
 
 # Configuration
 DATA_PATH = "MP_Data"
-actions = np.array(["Hello", "Thanks", "Help", "Father", "Mother"])  # Add your words
+actions = np.array(["book", "help"])  # Add your words
 no_sequences = 30  # Increased from 15 to 30
 sequence_length = 30
 
