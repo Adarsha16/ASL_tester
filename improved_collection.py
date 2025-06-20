@@ -27,6 +27,21 @@ sequence_length = 30
 # ===== MediaPipe Setup =====
 mp_holistic = mp.solutions.holistic
 
+# Important pose landmarks (reduced from 33 to 11 key points)
+# These include shoulders, elbows, wrists, hips, and the nose for orientation
+IMPORTANT_POSE_LANDMARKS = {
+    0: "NOSE",
+    11: "LEFT_SHOULDER",
+    12: "RIGHT_SHOULDER",
+    13: "LEFT_ELBOW",
+    14: "RIGHT_ELBOW",
+    15: "LEFT_WRIST",
+    16: "RIGHT_WRIST",
+    23: "LEFT_HIP",
+    24: "RIGHT_HIP",
+    25: "LEFT_KNEE",
+    26: "RIGHT_KNEE"
+}
 
 def mediapipe_detection(image, model):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -35,27 +50,25 @@ def mediapipe_detection(image, model):
     image.flags.writeable = True
     return cv2.cvtColor(image, cv2.COLOR_RGB2BGR), results
 
-
 def extract_keypoints(results):
     keypoint_list = []
 
-    # Pose (33 landmarks)
+    # Pose (only important landmarks - 11 points instead of 33)
     if results.pose_landmarks:
-        for res in results.pose_landmarks.landmark:
-            keypoint_list.extend([res.x, res.y, res.z, res.visibility])
+        for idx, res in enumerate(results.pose_landmarks.landmark):
+            if idx in IMPORTANT_POSE_LANDMARKS:
+                keypoint_list.extend([res.x, res.y, res.z, res.visibility])
     else:
-        keypoint_list.extend([0] * 33 * 4)
+        keypoint_list.extend([0] * len(IMPORTANT_POSE_LANDMARKS) * 4)
 
-    # Face (only key points)
-
-    # Left Hand
+    # Left Hand (21 landmarks)
     if results.left_hand_landmarks:
         for res in results.left_hand_landmarks.landmark:
             keypoint_list.extend([res.x, res.y, res.z])
     else:
         keypoint_list.extend([0] * 21 * 3)
 
-    # Right Hand
+    # Right Hand (21 landmarks)
     if results.right_hand_landmarks:
         for res in results.right_hand_landmarks.landmark:
             keypoint_list.extend([res.x, res.y, res.z])
@@ -63,7 +76,6 @@ def extract_keypoints(results):
         keypoint_list.extend([0] * 21 * 3)
 
     return np.array(keypoint_list)
-
 
 def temporal_augmentation(sequence):
     """Enhanced time warping with multiple interpolation methods"""
@@ -114,7 +126,6 @@ def temporal_augmentation(sequence):
 
     return sequence
 
-
 def spatial_augmentation(frame):
     """Enhanced spatial transformations with coherent transformations"""
     # Global transformations
@@ -161,7 +172,6 @@ def spatial_augmentation(frame):
 
     return frame
 
-
 def augment_sequence(original_path, target_dir):
     original_seq = [
         np.load(os.path.join(original_path, f"{i}.npy")) for i in range(sequence_length)
@@ -187,7 +197,6 @@ def augment_sequence(original_path, target_dir):
     os.makedirs(target_dir, exist_ok=True)
     for i, frame in enumerate(augmented_seq):
         np.save(os.path.join(target_dir, f"{i}.npy"), frame)
-
 
 with open(ANNOTATION_FILE, "r") as f:
     annotations = json.load(f)
