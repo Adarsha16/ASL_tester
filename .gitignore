@@ -11,3 +11,10 @@ classes.npy
 /train_median.npy
 /train_mean.npy
 /train_std.npy
+/.confusion_matrix.png
+*.h5
+*.npy
+*.png
+*.json
+/logs
+/logs_reduced

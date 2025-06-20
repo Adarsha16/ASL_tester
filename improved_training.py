@@ -60,13 +60,14 @@ IMPORTANT_POSE_LANDMARKS = {
     23: "LEFT_HIP",
     24: "RIGHT_HIP",
     25: "LEFT_KNEE",
-    26: "RIGHT_KNEE"
+    26: "RIGHT_KNEE",
 }
 
 # Calculate feature dimensions
 POSE_FEATURES = len(IMPORTANT_POSE_LANDMARKS) * 4  # x,y,z,visibility
 HAND_FEATURES = 21 * 3  # x,y,z for each hand
 TOTAL_FEATURES = POSE_FEATURES + (2 * HAND_FEATURES)  # Both hands
+
 
 # Enhanced data loading with caching and feature selection
 def load_data():
@@ -76,9 +77,13 @@ def load_data():
         cache = np.load(cache_path)
         return cache["X"], cache["y"]
 
+    print(
+        f"🔢 Feature dimensions: POSE={POSE_FEATURES}, HAND={HAND_FEATURES}, TOTAL={TOTAL_FEATURES}"
+    )
     print("🔍 Loading and processing data...")
     label_map = {label: num for num, label in enumerate(actions)}
     sequences, labels = [], []
+    skipped_sequences = 0
 
     for action in tqdm(actions, desc="Processing actions"):
         action_dir = os.path.join(DATA_PATH, action)
@@ -101,33 +106,26 @@ def load_data():
                 if not os.path.exists(frame_path):
                     valid_sequence = False
                     break
-                
-                # Load full frame data
-                full_frame = np.load(frame_path)
-                
-                # Extract only important features
-                reduced_frame = np.zeros(TOTAL_FEATURES)
-                
-                # Pose features (11 keypoints * 4)
-                pose_features = full_frame[:33*4]  # Original pose features
-                for i, idx in enumerate(IMPORTANT_POSE_LANDMARKS.keys()):
-                    start = idx * 4
-                    reduced_frame[i*4:(i+1)*4] = pose_features[start:start+4]
-                
-                # Hand features (keep all)
-                left_hand_start = 33*4
-                right_hand_start = 33*4 + 21*3
-                reduced_frame[POSE_FEATURES:] = np.concatenate([
-                    full_frame[left_hand_start:left_hand_start+21*3],
-                    full_frame[right_hand_start:right_hand_start+21*3]
-                ])
-                
-                window.append(reduced_frame)
+
+                # Load and flatten frame data
+                frame = np.load(frame_path).flatten()
+
+                # Verify frame size matches expected feature count
+                if frame.size != TOTAL_FEATURES:
+                    print(
+                        f"⚠️ Frame {frame_path} has size {frame.size} (expected {TOTAL_FEATURES}). Skipping sequence."
+                    )
+                    valid_sequence = False
+                    skipped_sequences += 1
+                    break
+
+                window.append(frame)
 
             if valid_sequence and window:
                 sequences.append(window)
                 labels.append(label_map[action])
 
+    print(f"ℹ️ Skipped {skipped_sequences} sequences due to invalid frames")
     X = np.array(sequences)
     y = to_categorical(LabelEncoder().fit_transform(labels))
 
@@ -137,6 +135,7 @@ def load_data():
 
 
 X, y = load_data()
+
 
 # Enhanced robust scaling
 def robust_scale(data, median, iqr):
@@ -314,7 +313,9 @@ callbacks = [
         mode="max",
         verbose=1,
     ),
-    TensorBoard(log_dir="logs_reduced", histogram_freq=1, profile_batch=0, update_freq="epoch"),
+    TensorBoard(
+        log_dir="logs_reduced", histogram_freq=1, profile_batch=0, update_freq="epoch"
+    ),
     LearningRateScheduler(lr_schedule),
 ]
 
