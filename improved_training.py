@@ -48,10 +48,29 @@ actions = np.array(["book", "help", "yes", "no", "want", "eat", "drink", "bathro
 no_sequences = 50
 sequence_length = 30
 
+# Important pose landmarks (same as in data processing)
+IMPORTANT_POSE_LANDMARKS = {
+    0: "NOSE",
+    11: "LEFT_SHOULDER",
+    12: "RIGHT_SHOULDER",
+    13: "LEFT_ELBOW",
+    14: "RIGHT_ELBOW",
+    15: "LEFT_WRIST",
+    16: "RIGHT_WRIST",
+    23: "LEFT_HIP",
+    24: "RIGHT_HIP",
+    25: "LEFT_KNEE",
+    26: "RIGHT_KNEE"
+}
 
-# Enhanced data loading with caching
+# Calculate feature dimensions
+POSE_FEATURES = len(IMPORTANT_POSE_LANDMARKS) * 4  # x,y,z,visibility
+HAND_FEATURES = 21 * 3  # x,y,z for each hand
+TOTAL_FEATURES = POSE_FEATURES + (2 * HAND_FEATURES)  # Both hands
+
+# Enhanced data loading with caching and feature selection
 def load_data():
-    cache_path = os.path.join(DATA_PATH, "dataset_cache.npz")
+    cache_path = os.path.join(DATA_PATH, "dataset_cache_reduced.npz")
     if os.path.exists(cache_path):
         print("🚀 Loading cached dataset...")
         cache = np.load(cache_path)
@@ -82,7 +101,28 @@ def load_data():
                 if not os.path.exists(frame_path):
                     valid_sequence = False
                     break
-                window.append(np.load(frame_path))
+                
+                # Load full frame data
+                full_frame = np.load(frame_path)
+                
+                # Extract only important features
+                reduced_frame = np.zeros(TOTAL_FEATURES)
+                
+                # Pose features (11 keypoints * 4)
+                pose_features = full_frame[:33*4]  # Original pose features
+                for i, idx in enumerate(IMPORTANT_POSE_LANDMARKS.keys()):
+                    start = idx * 4
+                    reduced_frame[i*4:(i+1)*4] = pose_features[start:start+4]
+                
+                # Hand features (keep all)
+                left_hand_start = 33*4
+                right_hand_start = 33*4 + 21*3
+                reduced_frame[POSE_FEATURES:] = np.concatenate([
+                    full_frame[left_hand_start:left_hand_start+21*3],
+                    full_frame[right_hand_start:right_hand_start+21*3]
+                ])
+                
+                window.append(reduced_frame)
 
             if valid_sequence and window:
                 sequences.append(window)
@@ -97,7 +137,6 @@ def load_data():
 
 
 X, y = load_data()
-
 
 # Enhanced robust scaling
 def robust_scale(data, median, iqr):
@@ -140,8 +179,8 @@ X_val = robust_scale(X_val, train_median, train_iqr)
 X_test = robust_scale(X_test, train_median, train_iqr)
 
 # Save normalization parameters
-np.save("train_median.npy", train_median)
-np.save("train_iqr.npy", train_iqr)
+np.save("train_median_reduced.npy", train_median)
+np.save("train_iqr_reduced.npy", train_iqr)
 
 
 # Corrected multi-head attention block
@@ -169,9 +208,9 @@ def multi_head_attention_block(inputs, num_heads=4, key_dim=64):
     return LayerNormalization(epsilon=1e-6)(outputs)
 
 
-# Enhanced hybrid model with feature fusion
+# Enhanced hybrid model with feature fusion (adjusted for reduced features)
 def create_enhanced_model():
-    inputs = Input(shape=(sequence_length, X_train.shape[-1]))
+    inputs = Input(shape=(sequence_length, TOTAL_FEATURES))
 
     # Input normalization
     x = LayerNormalization(axis=-1, epsilon=1e-6)(inputs)
@@ -268,14 +307,14 @@ callbacks = [
         min_delta=1e-4,
     ),
     ModelCheckpoint(
-        "best_asl_model.h5",
+        "best_asl_model_reduced.h5",
         monitor="val_categorical_accuracy",
         save_best_only=True,
         save_weights_only=False,
         mode="max",
         verbose=1,
     ),
-    TensorBoard(log_dir="logs", histogram_freq=1, profile_batch=0, update_freq="epoch"),
+    TensorBoard(log_dir="logs_reduced", histogram_freq=1, profile_batch=0, update_freq="epoch"),
     LearningRateScheduler(lr_schedule),
 ]
 
@@ -311,7 +350,7 @@ history = model.fit(
 )
 
 # Load best model
-model.load_weights("best_asl_model.h5")
+model.load_weights("best_asl_model_reduced.h5")
 
 
 # Enhanced evaluation
@@ -352,14 +391,14 @@ plt.yticks(tick_marks, actions)
 plt.ylabel("True label")
 plt.xlabel("Predicted label")
 plt.tight_layout()
-plt.savefig("confusion_matrix.png")
+plt.savefig("confusion_matrix_reduced.png")
 plt.close()
 
 # Save final model and evaluation results
-model.save("asl_model.h5")
-np.save("classes.npy", actions)
+model.save("asl_model_reduced.h5")
+np.save("classes_reduced.npy", actions)
 
-with open("evaluation_report.json", "w") as f:
+with open("evaluation_report_reduced.json", "w") as f:
     json.dump(report, f, indent=4)
 
 print("✅ Model saved with evaluation results")
