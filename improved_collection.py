@@ -6,6 +6,7 @@ import mediapipe as mp
 from tqdm import tqdm
 from scipy import interpolate
 import random
+import shutil  # Added for directory removal
 
 # ===== Configuration =====
 VIDEO_PATH = "videos"
@@ -14,6 +15,7 @@ DATA_PATH = "MP_Data"
 target_actions = [
     "book",
     "help",
+    "ljaf",
     "yes",
     "no",
     "want",
@@ -21,7 +23,7 @@ target_actions = [
     "drink",
     "bathroom",
 ]  # Expanded vocabulary
-no_sequences = 50  # Increased data volume
+no_sequences = 30  # Increased data volume
 sequence_length = 30
 
 # ===== MediaPipe Setup =====
@@ -322,6 +324,15 @@ with mp_holistic.Holistic(
                 f"✅ Sequence {sequence_count}/{no_sequences} collected from {video_info['video_id']}"
             )
 
+        # === FIX: Handle case with no real sequences ===
+        if sequence_count == 0:
+            # Remove empty action directory
+            action_dir = os.path.join(DATA_PATH, action)
+            if os.path.exists(action_dir):
+                shutil.rmtree(action_dir)
+            print(f"⚠️ No sequences collected for '{action}'. Directory removed.")
+            continue
+
         # Generate augmentations if needed
         if sequence_count < no_sequences:
             num_augmentations = no_sequences - sequence_count
@@ -342,10 +353,10 @@ with mp_holistic.Holistic(
                     f"✅ Augmented sequence {sequence_count + aug_idx + 1}/{no_sequences} created"
                 )
 
-            sequence_count += num_augmentations
-
 print("\n✅ All done! Dataset created under `MP_Data/`")
 total_sequences = sum(
-    len(os.listdir(os.path.join(DATA_PATH, act))) for act in target_actions
+    len(os.listdir(os.path.join(DATA_PATH, act)))
+    for act in target_actions
+    if os.path.exists(os.path.join(DATA_PATH, act))  # Handle removed actions
 )
 print(f"Total sequences collected: {total_sequences}")
