@@ -5,24 +5,20 @@ import numpy as np
 import mediapipe as mp
 from tqdm import tqdm
 from scipy import interpolate
-import random
-import shutil  # Added for directory removal
+import shutil
+from collections import OrderedDict
 
 # ===== Configuration =====
 VIDEO_PATH = "videos"
 ANNOTATION_FILE = "WLASL_v0.3.json"
 DATA_PATH = "MP_Data"
-target_actions = [
-    "book",
-    "help",
-    "ljaf",
-    "yes",
-    "no",
-    "want",
-    "eat",
-    "drink",
-    "bathroom",
-]  # Expanded vocabulary
+
+
+with open("WLASL_v0.3.json") as f:
+    data = json.load(f)
+
+target_actions = list(OrderedDict.fromkeys(entry["gloss"] for entry in data))[:50]
+
 no_sequences = 30  # Increased data volume
 sequence_length = 30
 

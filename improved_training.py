@@ -44,8 +44,73 @@ set_global_policy("mixed_float16")
 
 # Configuration
 DATA_PATH = "MP_Data"
-actions = np.array(["book", "help", "yes", "no", "want", "eat", "drink", "bathroom"])
-no_sequences = 50
+
+# Original list of possible actions
+possible_actions = [
+    "book",
+    "drink",
+    "computer",
+    "before",
+    "chair",
+    "go",
+    "clothes",
+    "who",
+    "candy",
+    "cousin",
+    "deaf",
+    "fine",
+    "help",
+    "no",
+    "thin",
+    "walk",
+    "year",
+    "yes",
+    "all",
+    "black",
+    "cool",
+    "finish",
+    "hot",
+    "like",
+    "many",
+    "mother",
+    "now",
+    "orange",
+    "table",
+    "thanksgiving",
+    "what",
+    "woman",
+    "bed",
+    "blue",
+    "bowling",
+    "can",
+    "dog",
+    "family",
+    "fish",
+    "graduate",
+    "hat",
+    "hearing",
+    "kiss",
+    "language",
+    "later",
+    "man",
+    "shirt",
+    "study",
+    "tall",
+    "white",
+]
+
+# Filter actions to only include directories that exist
+actions = []
+for action in possible_actions:
+    action_dir = os.path.join(DATA_PATH, action)
+    if os.path.exists(action_dir) and os.path.isdir(action_dir):
+        actions.append(action)
+actions = np.array(actions)
+num_classes = len(actions)
+
+print(f"✅ Using {num_classes} actions: {', '.join(actions)}")
+
+no_sequences = 30
 sequence_length = 30
 
 # Important pose landmarks (same as in data processing)
@@ -71,26 +136,24 @@ TOTAL_FEATURES = POSE_FEATURES + (2 * HAND_FEATURES)  # Both hands
 
 # Enhanced data loading with caching and feature selection
 def load_data():
-    cache_path = os.path.join(DATA_PATH, "dataset_cache_reduced.npz")
+    cache_path = os.path.join(DATA_PATH, f"dataset_cache_reduced_{num_classes}.npz")
     if os.path.exists(cache_path):
         print("🚀 Loading cached dataset...")
         cache = np.load(cache_path)
-        return cache["X"], cache["y"]
+        return cache["X"], cache["y"], cache["classes"]
 
     print(
         f"🔢 Feature dimensions: POSE={POSE_FEATURES}, HAND={HAND_FEATURES}, TOTAL={TOTAL_FEATURES}"
     )
     print("🔍 Loading and processing data...")
-    label_map = {label: num for num, label in enumerate(actions)}
     sequences, labels = [], []
     skipped_sequences = 0
 
+    # Create label map for actual actions
+    label_map = {label: num for num, label in enumerate(actions)}
+
     for action in tqdm(actions, desc="Processing actions"):
         action_dir = os.path.join(DATA_PATH, action)
-        if not os.path.exists(action_dir):
-            print(f"⚠️ Directory not found: {action_dir}")
-            continue
-
         sequence_dirs = [
             d
             for d in os.listdir(action_dir)
@@ -127,14 +190,19 @@ def load_data():
 
     print(f"ℹ️ Skipped {skipped_sequences} sequences due to invalid frames")
     X = np.array(sequences)
-    y = to_categorical(LabelEncoder().fit_transform(labels))
+
+    # Encode labels and get actual class names
+    le = LabelEncoder()
+    labels_encoded = le.fit_transform(labels)
+    y = to_categorical(labels_encoded)
+    actual_classes = le.classes_
 
     # Cache dataset
-    np.savez(cache_path, X=X, y=y)
-    return X, y
+    np.savez(cache_path, X=X, y=y, classes=actual_classes)
+    return X, y, actual_classes
 
 
-X, y = load_data()
+X, y, actual_classes = load_data()
 
 
 # Enhanced robust scaling
@@ -208,7 +276,7 @@ def multi_head_attention_block(inputs, num_heads=4, key_dim=64):
 
 
 # Enhanced hybrid model with feature fusion (adjusted for reduced features)
-def create_enhanced_model():
+def create_enhanced_model(num_classes):
     inputs = Input(shape=(sequence_length, TOTAL_FEATURES))
 
     # Input normalization
@@ -263,13 +331,13 @@ def create_enhanced_model():
     x = Dense(256, activation="relu", kernel_regularizer=l1_l2(0.001, 0.01))(x)
     x = Dropout(0.4)(x)
 
-    outputs = Dense(actions.shape[0], activation="softmax", dtype="float32")(x)
+    outputs = Dense(num_classes, activation="softmax", dtype="float32")(x)
 
     model = Model(inputs=inputs, outputs=outputs)
     return model
 
 
-model = create_enhanced_model()
+model = create_enhanced_model(num_classes)
 model.summary()
 
 
@@ -353,6 +421,8 @@ history = model.fit(
 # Load best model
 model.load_weights("best_asl_model_reduced.h5")
 
+new_report = {}
+
 
 # Enhanced evaluation
 def evaluate_model(model, X_test, y_test):
@@ -369,10 +439,19 @@ def evaluate_model(model, X_test, y_test):
 
     # Classification report
     report = classification_report(
-        y_true_classes, y_pred_classes, target_names=actions, output_dict=True
+        y_true_classes, y_pred_classes, target_names=actual_classes, output_dict=True
     )
 
-    return test_loss, test_acc, top3_acc, cm, report
+    # Convert integer keys to class names for JSON serialization
+
+    for key, value in report.items():
+        if isinstance(key, (int, np.integer)):
+            # Map integer key to actual class name
+            new_report[actual_classes[key]] = value
+        else:
+            new_report[key] = value
+
+    return test_loss, test_acc, top3_acc, cm, new_report
 
 
 test_loss, test_acc, top3_acc, cm, report = evaluate_model(model, X_test, y_test)
@@ -386,9 +465,9 @@ plt.figure(figsize=(12, 10))
 plt.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
 plt.title("Confusion Matrix")
 plt.colorbar()
-tick_marks = np.arange(len(actions))
-plt.xticks(tick_marks, actions, rotation=45)
-plt.yticks(tick_marks, actions)
+tick_marks = np.arange(len(actual_classes))
+plt.xticks(tick_marks, actual_classes, rotation=45)
+plt.yticks(tick_marks, actual_classes)
 plt.ylabel("True label")
 plt.xlabel("Predicted label")
 plt.tight_layout()
@@ -397,9 +476,10 @@ plt.close()
 
 # Save final model and evaluation results
 model.save("asl_model_reduced.h5")
-np.save("classes_reduced.npy", actions)
+np.save("classes_reduced.npy", actual_classes)
 
 with open("evaluation_report_reduced.json", "w") as f:
-    json.dump(report, f, indent=4)
+    json.dump({str(k): v for k, v in new_report.items()}, f, indent=4)
+# Now report has only string keys
 
 print("✅ Model saved with evaluation results")
