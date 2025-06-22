@@ -14,12 +14,59 @@ ANNOTATION_FILE = "WLASL_v0.3.json"
 DATA_PATH = "MP_Data"
 
 
-with open("WLASL_v0.3.json") as f:
-    data = json.load(f)
-
-target_actions = list(OrderedDict.fromkeys(entry["gloss"] for entry in data))[:50]
-
-no_sequences = 30  # Increased data volume
+target_actions = [
+    "drink",
+    "book",
+    "computer",
+    "go",
+    "before",
+    "who",
+    "walk",
+    "what",
+    "thin",
+    "year",
+    "yes",
+    "all",
+    "black",
+    "cool",
+    "finish",
+    "hot",
+    "like",
+    "many",
+    "mother",
+    "now",
+    "orange",
+    "table",
+    "thanksgiving",
+    "woman",
+    "bed",
+    "blue",
+    "bowling",
+    "can",
+    "dog",
+    "family",
+    "fish",
+    "graduate",
+    "hat",
+    "help",
+    "no",
+    "clothes",
+    "pizza",
+    "play",
+    "school",
+    "shirt",
+    "study",
+    "tall",
+    "white",
+    "wrong",
+    "accident",
+    "apple",
+    "bird",
+    "change",
+    "color",
+    "corn",
+]
+no_sequences = 30
 sequence_length = 30
 
 # ===== MediaPipe Setup =====

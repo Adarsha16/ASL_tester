@@ -190,7 +190,7 @@ with mp_holistic.Holistic(
                 top_confidences[-1] > PREDICTION_THRESHOLD
                 and confidence_delta > CONFIDENCE_DELTA
             ):
-                prediction_queue.append(top_idx[-1])
+                prediction_queue.append(top_actions[-1])
                 confidence_history.append(top_confidences[-1])
                 prediction_made = True
 
@@ -253,18 +253,6 @@ with mp_holistic.Holistic(
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 255, 0) if hand_detected else (0, 0, 255),
-            2,
-        )
-
-        # Sequence status
-        seq_status = f"Sequence: {len(sequence)}/{SEQUENCE_LENGTH}"
-        cv2.putText(
-            info_panel,
-            seq_status,
-            (20, 70),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 165, 255),
             2,
         )
 
