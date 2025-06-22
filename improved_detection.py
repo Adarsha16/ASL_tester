@@ -7,7 +7,7 @@ import time
 
 # Load model and class names
 model = load_model("asl_model_reduced.h5", compile=False)
-actions = np.load("classes_reduced.npy")
+actions = np.load("classes_reduced.npy", allow_pickle=True)
 train_median = np.load("train_median_reduced.npy")
 train_iqr = np.load("train_iqr_reduced.npy")
 
@@ -33,7 +33,7 @@ IMPORTANT_POSE_LANDMARKS = {
 
 # Configuration
 SEQUENCE_LENGTH = 30
-PREDICTION_THRESHOLD = 0.7  # High confidence threshold
+PREDICTION_THRESHOLD = 0.3  # High confidence threshold
 CONFIDENCE_DELTA = 0.15  # Min difference between top predictions
 CONFIDENCE_WINDOW = 15  # Frames to average predictions over
 COOLDOWN_FRAMES = 20  # Minimum frames before changing prediction
@@ -179,6 +179,9 @@ with mp_holistic.Holistic(
 
             # Get prediction
             res = model.predict(input_data, verbose=0)[0]
+            print(f"Raw predictions: {res}")
+            print(f"Max confidence: {np.max(res):.4f}")
+            print(f"Top 3: {actions[np.argsort(res)[-3:]]}")
             top_idx = np.argsort(res)[-2:]  # Get top 2 predictions
             top_actions = actions[top_idx]
             top_confidences = res[top_idx]
@@ -206,7 +209,7 @@ with mp_holistic.Holistic(
                     )
 
                     if avg_confidence > PREDICTION_THRESHOLD:
-                        predicted_action = actions[most_common]
+                        predicted_action = most_common
 
                         # Cooldown logic prevents rapid prediction changes
                         if predicted_action != current_action:
