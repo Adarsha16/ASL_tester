@@ -5,12 +5,11 @@ import mediapipe as mp
 from tqdm import tqdm
 from scipy import interpolate
 import shutil
+import json
 
 # ===== Configuration =====
-VIDEO_PATH = "videos"  # Still needed if you plan to process existing videos too, but not for webcam capture
-ANNOTATION_FILE = (
-    "WLASL_v0.3.json"  # Not directly used for webcam capture, but kept for context
-)
+VIDEO_PATH = "videos"
+ANNOTATION_FILE = "WLASL_v0.3.json"
 DATA_PATH = "MP_Data"
 
 target_actions = [
@@ -65,17 +64,22 @@ target_actions = [
     "color",
     "corn",
 ]
-no_sequences = 30  # Total desired sequences per action (webcam + augmented)
-no_sequences_webcam = 15  # Number of sequences to capture from webcam
+no_sequences = 30
+no_sequences_webcam = 15
 sequence_length = 30
 
 # ===== MediaPipe Setup =====
 mp_holistic = mp.solutions.holistic
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
 
-# Important pose landmarks (reduced from 33 to 11 key points)
-# These include shoulders, elbows, wrists, hips, and the nose for orientation
+# Important pose landmarks including facial features
 IMPORTANT_POSE_LANDMARKS = {
     0: "NOSE",
+    1: "LEFT_EYE_INNER",
+    2: "LEFT_EYE",
+    4: "RIGHT_EYE_INNER",
+    5: "RIGHT_EYE",
     11: "LEFT_SHOULDER",
     12: "RIGHT_SHOULDER",
     13: "LEFT_ELBOW",
@@ -87,6 +91,9 @@ IMPORTANT_POSE_LANDMARKS = {
     25: "LEFT_KNEE",
     26: "RIGHT_KNEE",
 }
+
+# Ask for handedness once at start
+is_left_handed = input("Are you left-handed? (y/n): ").lower().strip() == "y"
 
 
 def mediapipe_detection(image, model):
@@ -108,16 +115,24 @@ def extract_keypoints(results):
         else:
             keypoint_list.extend([0] * 4)
 
+    # Hand extraction with handedness swapping
+    left_hand = results.left_hand_landmarks
+    right_hand = results.right_hand_landmarks
+
+    # Swap hands if user is left-handed
+    if is_left_handed:
+        left_hand, right_hand = right_hand, left_hand
+
     # Left Hand (21 landmarks)
-    if results.left_hand_landmarks:
-        for res in results.left_hand_landmarks.landmark:
+    if left_hand:
+        for res in left_hand.landmark:
             keypoint_list.extend([res.x, res.y, res.z])
     else:
         keypoint_list.extend([0] * 21 * 3)
 
     # Right Hand (21 landmarks)
-    if results.right_hand_landmarks:
-        for res in results.right_hand_landmarks.landmark:
+    if right_hand:
+        for res in right_hand.landmark:
             keypoint_list.extend([res.x, res.y, res.z])
     else:
         keypoint_list.extend([0] * 21 * 3)
@@ -125,23 +140,54 @@ def extract_keypoints(results):
     return np.array(keypoint_list)
 
 
+def draw_landmarks(image, results):
+    # Draw pose connections
+    if results.pose_landmarks:
+        mp_drawing.draw_landmarks(
+            image,
+            results.pose_landmarks,
+            mp_holistic.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style(),
+        )
+
+    # Draw left hand connections
+    if results.left_hand_landmarks:
+        mp_drawing.draw_landmarks(
+            image,
+            results.left_hand_landmarks,
+            mp_holistic.HAND_CONNECTIONS,
+            mp_drawing_styles.get_default_hand_landmarks_style(),
+            mp_drawing_styles.get_default_hand_connections_style(),
+        )
+
+    # Draw right hand connections
+    if results.right_hand_landmarks:
+        mp_drawing.draw_landmarks(
+            image,
+            results.right_hand_landmarks,
+            mp_holistic.HAND_CONNECTIONS,
+            mp_drawing_styles.get_default_hand_landmarks_style(),
+            mp_drawing_styles.get_default_hand_connections_style(),
+        )
+    return image
+
+
 def temporal_augmentation(sequence):
-    """Enhanced time warping with multiple interpolation methods"""
+    """Enhanced time warping with safer interpolation"""
+    if len(sequence) < 2:  # Need at least 2 frames to interpolate
+        return sequence
+
     # Randomly select warping parameters
     warp_type = np.random.choice(["speed", "reverse", "jitter"])
 
     if warp_type == "speed":
-        # Speed variation
-        factor = np.random.uniform(0.5, 1.5)
-        new_length = int(len(sequence) * factor)
+        # Safer speed variation
+        factor = np.random.uniform(0.8, 1.2)  # Reduced range for safety
+        new_length = max(5, min(100, int(len(sequence) * factor)))  # Constrained length
 
-        # Handle edge cases
-        if new_length < 5 or new_length > 100:  # Ensure reasonable lengths
-            return sequence
-
-        # Select interpolation method
+        # Select interpolation method based on available points
         methods = ["linear", "nearest", "slinear"]
-        if len(sequence) > 4:  # Cubic requires at least 4 points
+        if len(sequence) > 4:
             methods.append("cubic")
         kind = np.random.choice(methods)
 
@@ -166,148 +212,102 @@ def temporal_augmentation(sequence):
         sequence = sequence[::-1]
 
     elif warp_type == "jitter":
-        # Frame jittering
-        if len(sequence) > 0:  # Ensure sequence is not empty
-            jitter_amount = np.random.randint(1, 3)
-            # Add random frames from sequence to create jitter
-            indices = np.arange(len(sequence))
-            np.random.shuffle(indices)
-            jittered_indices = np.sort(
-                indices[: min(jitter_amount, len(sequence))]
-            )  # Pick few frames to duplicate
-
-            jittered_sequence = []
-            current_idx = 0
-            for idx in range(len(sequence)):
-                jittered_sequence.append(sequence[idx])
-                if idx in jittered_indices:
-                    jittered_sequence.append(sequence[idx])  # Duplicate frame
-            sequence = np.array(jittered_sequence)
-
-        # Original simple jitter (can be combined or replaced)
-        # jitter_amount = np.random.randint(1, 3)
-        # sequence = np.concatenate(
-        #     [sequence, sequence[-1:].repeat(jitter_amount, axis=0)]
-        # )
+        # Frame jittering with bounds check
+        if len(sequence) > 1:
+            jitter_amount = np.random.randint(1, min(3, len(sequence) // 2))
+            jittered_indices = np.random.choice(
+                len(sequence), jitter_amount, replace=False
+            )
+            sequence = np.insert(
+                sequence, jittered_indices, sequence[jittered_indices], axis=0
+            )
 
     return sequence
 
 
 def spatial_augmentation(frame):
-    """Enhanced spatial transformations with coherent transformations"""
+    """Enhanced spatial transformations with bounds checking"""
+    # Create copy to avoid modifying original
+    frame = frame.copy()
+    num_coords = len(frame)
+
     # Global transformations
-    if np.random.rand() < 0.7:  # 70% chance
-        # Uniform scaling
+    if np.random.rand() < 0.7:
         scale_factor = np.random.uniform(0.8, 1.2)
         frame = frame * scale_factor
 
-    if np.random.rand() < 0.7:  # 70% chance
-        # Translation
-        # Ensure translation is applied to each coordinate for each point
-        translation = np.random.uniform(-0.1, 0.1, size=(3,))
-        num_coords = frame.shape[0] // 3  # Assuming (x,y,z) for each point
-        for i in range(num_coords):
-            frame[i * 3] += translation[0]  # x-coordinates
-            frame[i * 3 + 1] += translation[1]  # y-coordinates
-            frame[i * 3 + 2] += translation[2]  # z-coordinates
+    if np.random.rand() < 0.7:
+        translation = np.random.uniform(-0.1, 0.1, size=3)
+        for i in range(0, num_coords, 3):
+            if i < num_coords:
+                frame[i] += translation[0]
+            if i + 1 < num_coords:
+                frame[i + 1] += translation[1]
+            if i + 2 < num_coords:
+                frame[i + 2] += translation[2]
 
-    if np.random.rand() < 0.5:  # 50% chance
-        # Rotation (2D plane)
+    if np.random.rand() < 0.5:
         angle = np.random.uniform(-15, 15)
         rad = np.deg2rad(angle)
         rot_matrix = np.array([[np.cos(rad), -np.sin(rad)], [np.sin(rad), np.cos(rad)]])
 
-        # Center normalization
-        # Calculate center based on actual detected points, ignore (0,0,0) if no detection
-        valid_x = frame[0::3][frame[0::3] != 0]
-        valid_y = frame[1::3][frame[1::3] != 0]
+        # Calculate center from non-zero points
+        valid_x = frame[0::3][(frame[0::3] != 0) & (frame[1::3] != 0)]
+        valid_y = frame[1::3][(frame[0::3] != 0) & (frame[1::3] != 0)]
+        center_x = np.mean(valid_x) if len(valid_x) > 0 else 0.5
+        center_y = np.mean(valid_y) if len(valid_y) > 0 else 0.5
 
-        center_x = np.mean(valid_x) if np.any(valid_x) else 0.5
-        center_y = np.mean(valid_y) if np.any(valid_y) else 0.5
+        # Apply rotation to all (x,y) pairs
+        for i in range(0, num_coords, 3):
+            if i + 1 >= num_coords:
+                continue
 
-        # Apply rotation to x,y coordinates
-        # Iterate over keypoints, assuming each keypoint has (x,y,z) or (x,y,z,visibility)
-        # Our extract_keypoints gives (x,y,z,visibility) for pose, and (x,y,z) for hands
-        # The frame will be a flattened array.
-        # Pose landmarks are 4 values, hand landmarks are 3 values.
-        # Re-evaluate the frame structure here. Currently, extract_keypoints flattens to a single list.
+            x = frame[i] - center_x
+            y = frame[i + 1] - center_y
+            rotated = rot_matrix @ np.array([x, y])
+            frame[i] = rotated[0] + center_x
+            frame[i + 1] = rotated[1] + center_y
 
-        # Let's assume for spatial augmentation, we're working with the flattened keypoint_list structure:
-        # Pose (11 * 4) + Left Hand (21 * 3) + Right Hand (21 * 3) = 44 + 63 + 63 = 170 elements
-
-        # Pose part (indices 0 to 43, in groups of 4: x,y,z,v)
-        for i in range(0, 11 * 4, 4):  # For each pose landmark
-            x_idx, y_idx = i, i + 1
-            if x_idx + 1 < len(frame):  # Ensure indices are within bounds
-                x = frame[x_idx] - center_x
-                y = frame[y_idx] - center_y
-                rotated = rot_matrix @ np.array([x, y])
-                frame[x_idx] = rotated[0] + center_x
-                frame[y_idx] = rotated[1] + center_y
-
-        # Left Hand part (indices 44 to 44 + 21*3 - 1, in groups of 3: x,y,z)
-        for i in range(44, 44 + 21 * 3, 3):  # For each left hand landmark
-            x_idx, y_idx = i, i + 1
-            if x_idx + 1 < len(frame):
-                x = frame[x_idx] - center_x
-                y = frame[y_idx] - center_y
-                rotated = rot_matrix @ np.array([x, y])
-                frame[x_idx] = rotated[0] + center_x
-                frame[y_idx] = rotated[1] + center_y
-
-        # Right Hand part (indices 44 + 21*3 to end, in groups of 3: x,y,z)
-        for i in range(44 + 21 * 3, len(frame), 3):  # For each right hand landmark
-            x_idx, y_idx = i, i + 1
-            if x_idx + 1 < len(frame):
-                x = frame[x_idx] - center_x
-                y = frame[y_idx] - center_y
-                rotated = rot_matrix @ np.array([x, y])
-                frame[x_idx] = rotated[0] + center_x
-                frame[y_idx] = rotated[1] + center_y
-
-    # Per-joint transformations
-    if np.random.rand() < 0.6:  # 60% chance
-        # Random noise
+    if np.random.rand() < 0.6:
         noise = np.random.normal(0, 0.03, size=frame.shape)
         frame = frame + noise
 
-    if np.random.rand() < 0.3:  # 30% chance
-        # Axis dropout
-        # Create a mask to zero out some x,y,z coordinates
-        # For a coordinate, it's either all kept or all dropped.
-        dropout_mask_per_coord = np.random.choice(
-            [0, 1], size=(frame.shape[0]), p=[0.1, 0.9]
-        )
-        frame = frame * dropout_mask_per_coord
+    if np.random.rand() < 0.3:
+        dropout_mask = np.random.choice([0, 1], size=frame.shape, p=[0.1, 0.9])
+        frame = frame * dropout_mask
 
     return frame
 
 
 def augment_sequence(original_path, target_dir):
-    original_seq = [
-        np.load(os.path.join(original_path, f"{i}.npy")) for i in range(sequence_length)
-    ]
-    original_seq = np.array(original_seq)
+    """Augment sequence stored in single file"""
+    try:
+        # Load entire sequence from single file
+        original_seq = np.load(os.path.join(original_path, "sequence.npy"))
 
-    # Apply temporal augmentation
-    augmented_seq = temporal_augmentation(original_seq)
+        # Apply temporal augmentation
+        augmented_seq = temporal_augmentation(original_seq)
 
-    # Pad/truncate to fixed length
-    if len(augmented_seq) > sequence_length:
-        augmented_seq = augmented_seq[:sequence_length]
-    elif len(augmented_seq) < sequence_length:
-        pad_length = sequence_length - len(augmented_seq)
-        padding = np.zeros((pad_length, augmented_seq.shape[1]))
-        augmented_seq = np.vstack((augmented_seq, padding))
+        # Pad/truncate to fixed length
+        if len(augmented_seq) > sequence_length:
+            augmented_seq = augmented_seq[:sequence_length]
+        elif len(augmented_seq) < sequence_length:
+            pad_length = sequence_length - len(augmented_seq)
+            padding = np.zeros((pad_length, augmented_seq.shape[1]))
+            augmented_seq = np.vstack((augmented_seq, padding))
 
-    # Apply spatial augmentations
-    for i in range(len(augmented_seq)):
-        augmented_seq[i] = spatial_augmentation(augmented_seq[i])
+        # Apply spatial augmentations
+        for i in range(len(augmented_seq)):
+            augmented_seq[i] = spatial_augmentation(augmented_seq[i])
 
-    # Save augmented sequence
-    os.makedirs(target_dir, exist_ok=True)
-    for i, frame in enumerate(augmented_seq):
-        np.save(os.path.join(target_dir, f"{i}.npy"), frame)
+        # Save augmented sequence as single file
+        os.makedirs(target_dir, exist_ok=True)
+        np.save(os.path.join(target_dir, "sequence.npy"), augmented_seq)
+        return True
+
+    except Exception as e:
+        print(f"Error augmenting sequence: {e}")
+        return False
 
 
 # ===== Create Dataset Directories =====
@@ -319,191 +319,197 @@ for action in tqdm(target_actions):
 with mp_holistic.Holistic(
     min_detection_confidence=0.6,
     min_tracking_confidence=0.6,
-    model_complexity=2,  # Higher accuracy
+    model_complexity=2,
 ) as holistic:
     for action in target_actions:
         print(f"\n🚀 Processing action: {action}")
         sequence_count = 0
 
         # --- Webcam Capture ---
-        print(
-            f"Starting webcam capture for action: {action}. Capture {no_sequences_webcam} sequences."
-        )
+        print(f"Starting webcam capture for: {action}")
 
-        cap = cv2.VideoCapture(0)  # Open default webcam
+        cap = cv2.VideoCapture(0)
         if not cap.isOpened():
-            print("ERROR: Could not open webcam. Exiting.")
-            break  # Exit the function if webcam not available
+            print("ERROR: Could not open webcam. Skipping action.")
+            continue
 
         for seq_num in range(no_sequences_webcam):
-            if sequence_count >= no_sequences_webcam:
-                break
-
             keypoints_buffer = []
             recording = False
-            frame_counter = 0
+            discarded = False
 
             print(
                 f"\n--- Sequence {seq_num + 1}/{no_sequences_webcam} for '{action}' ---"
             )
-            print("Press 'S' to START recording.")
-            print("Press 'S' again to STOP recording this sequence and save.")
-            print(
-                "Press 'Q' to QUIT collection for this action (and proceed to augmentation if needed)."
-            )
+            print("S - Start/Stop recording | D - Discard | Q - Quit action")
+            print("Press 'S' to begin recording...")
 
             while True:
                 ret, frame = cap.read()
                 if not ret:
-                    print("Failed to grab frame, trying again...")
+                    print("Frame capture error, skipping...")
                     continue
 
-                # Flip frame horizontally for mirror effect (common for webcam)
+                # Mirror display
                 frame = cv2.flip(frame, 1)
-
                 image, results = mediapipe_detection(frame, holistic)
+                image = draw_landmarks(image, results)
 
-                # Draw landmarks for visualization
-                # For pose: mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS)
-                # For hands: mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-                # You might need to import drawing_utils if you want to visualize:
-                # import mediapipe.python.solutions.drawing_utils as mp_drawing
-                # Example for drawing:
-                # mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
-                #                            mp_drawing.DrawingSpec(color=(80,22,10), thickness=2, circle_radius=4),
-                #                            mp_drawing.DrawingSpec(color=(80,44,121), thickness=2, circle_radius=2)
-                #                            )
-                # mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
-                #                            mp_drawing.DrawingSpec(color=(121,22,76), thickness=2, circle_radius=4),
-                #                            mp_drawing.DrawingSpec(color=(121,44,250), thickness=2, circle_radius=2)
-                #                            )
-                # mp_drawing.draw_landmarks(image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
-                #                            mp_drawing.DrawingSpec(color=(245,117,66), thickness=2, circle_radius=4),
-                #                            mp_drawing.DrawingSpec(color=(245,66,230), thickness=2, circle_radius=2)
-                #                            )
-
-                display_text = "PRESS 'S' TO START RECORDING"
-                if recording:
-                    display_text = f"RECORDING... ({len(keypoints_buffer)}/{sequence_length} frames)"
-                elif len(keypoints_buffer) > 0 and not recording:
-                    display_text = (
-                        "RECORDING PAUSED. Press 'S' to continue or 'Q' to quit."
-                    )
-
+                # Display instructions
+                status = "RECORDING" if recording else "READY"
                 cv2.putText(
                     image,
-                    display_text,
-                    (50, 50),
+                    f"Status: {status} | Frames: {len(keypoints_buffer)}/{sequence_length}",
+                    (20, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
+                    0.7,
                     (0, 255, 0),
                     2,
-                    cv2.LINE_AA,
                 )
-                cv2.imshow("OpenCV Feed - Data Collection", image)
+                cv2.putText(
+                    image,
+                    f"Action: {action} | Seq: {sequence_count + 1}/{no_sequences_webcam}",
+                    (20, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 165, 255),
+                    2,
+                )
+                cv2.imshow(f"Sign Collection: {action}", image)
 
                 key = cv2.waitKey(10) & 0xFF
 
-                if key == ord("s"):  # Start/Stop recording
+                # Toggle recording
+                if key == ord("s"):
                     recording = not recording
                     if recording:
-                        print(
-                            f"Starting recording sequence {seq_num + 1} for '{action}'..."
-                        )
+                        print("Recording started...")
                     else:
-                        print(
-                            f"Pausing recording sequence {seq_num + 1} for '{action}'. Current frames: {len(keypoints_buffer)}"
-                        )
+                        print("Recording paused.")
 
+                # Discard current sequence
+                elif key == ord("d"):
+                    if recording:
+                        recording = False
+                    print("Sequence discarded.")
+                    keypoints_buffer = []
+                    discarded = True
+                    break
+
+                # Quit action
+                elif key == ord("q"):
+                    print("Quitting action...")
+                    if recording:
+                        recording = False
+                    break
+
+                # Capture frame if recording
                 if recording:
                     keypoints = extract_keypoints(results)
-                    # Only add frames with *some* detection (pose or hands)
-                    if np.any(keypoints != 0):  # Check if any keypoint is non-zero
+
+                    # Only save frames with valid data
+                    if np.any(keypoints != 0):
                         keypoints_buffer.append(keypoints)
 
+                    # Stop when sequence length reached
                     if len(keypoints_buffer) >= sequence_length:
-                        print(
-                            f"Sequence {seq_num + 1} for '{action}' captured {len(keypoints_buffer)} frames."
-                        )
-                        recording = False  # Automatically stop recording after sequence_length frames
-                        break  # Exit inner while loop to save sequence
+                        recording = False
+                        break
 
-                if key == ord("q"):  # Quit for current action
-                    print("Quitting webcam collection for this action.")
-                    recording = False
-                    break  # Exit inner while loop and proceed to augmentation
-
-            if len(keypoints_buffer) < sequence_length:
-                print(
-                    f"Warning: Sequence {seq_num + 1} for '{action}' has only {len(keypoints_buffer)} frames. Padding with zeros."
-                )
-                pad_length = sequence_length - len(keypoints_buffer)
-                if len(keypoints_buffer) > 0:
-                    padding = [np.zeros_like(keypoints_buffer[0])] * pad_length
-                else:
-                    # If buffer is empty, create a zero array of the expected keypoint size
-                    padding = [
-                        np.zeros(170)
-                    ] * pad_length  # 170 is the expected size from extract_keypoints
-                keypoints_buffer.extend(padding)
-            else:
-                keypoints_buffer = keypoints_buffer[
-                    :sequence_length
-                ]  # Truncate if too long
-
-            if len(keypoints_buffer) == sequence_length:
-                seq_dir = os.path.join(DATA_PATH, action, str(sequence_count))
-                os.makedirs(seq_dir, exist_ok=True)
-                for frame_num, keypoints in enumerate(keypoints_buffer):
-                    np.save(os.path.join(seq_dir, f"{frame_num}.npy"), keypoints)
-                sequence_count += 1
-                print(
-                    f"✅ Sequence {sequence_count}/{no_sequences_webcam} collected for '{action}'."
-                )
-            else:
-                print(
-                    f"Skipping sequence {seq_num + 1} for '{action}' due to insufficient frames after padding."
-                )
-
-            if key == ord("q"):  # If user pressed 'q', break outer loop as well
+            # Handle quit command
+            if key == ord("q"):
                 break
 
-        cap.release()
-        cv2.destroyAllWindows()  # Close the webcam window
+            # Skip saving if discarded
+            if discarded:
+                continue
 
-        # === Augmentation Phase ===
+            # Final sequence validation
+            if len(keypoints_buffer) == 0:
+                print("No valid frames captured. Sequence skipped.")
+                continue
+
+            # Pad sequence if needed
+            if len(keypoints_buffer) < sequence_length:
+                pad_length = sequence_length - len(keypoints_buffer)
+                padding = [np.zeros_like(keypoints_buffer[0])] * pad_length
+                keypoints_buffer.extend(padding)
+                print(f"Padded with {pad_length} empty frames")
+            else:
+                keypoints_buffer = keypoints_buffer[:sequence_length]
+
+            # Convert to numpy array
+            sequence_array = np.array(keypoints_buffer)
+
+            # Skip if all frames are empty
+            if np.all(sequence_array == 0):
+                print("All frames empty. Sequence skipped.")
+                continue
+
+            # Create sequence directory
+            seq_dir = os.path.join(DATA_PATH, action, str(sequence_count))
+            os.makedirs(seq_dir, exist_ok=True)
+
+            # Save as single file
+            np.save(os.path.join(seq_dir, "sequence.npy"), sequence_array)
+            sequence_count += 1
+            print(f"✅ Sequence saved: {seq_dir}")
+
+        # Release resources
+        cap.release()
+        cv2.destroyAllWindows()
+
+        # Skip augmentation if no sequences captured
         if sequence_count == 0:
-            # Remove empty action directory if no real sequences were collected
+            print(f"⚠️ No sequences collected for '{action}'. Skipping.")
             action_dir = os.path.join(DATA_PATH, action)
-            if os.path.exists(action_dir):
+            if os.path.exists(action_dir) and not os.listdir(action_dir):
                 shutil.rmtree(action_dir)
-            print(f"⚠️ No sequences collected for '{action}'. Directory removed.")
             continue
 
+        # --- Augmentation Phase ---
         if sequence_count < no_sequences:
             num_augmentations = no_sequences - sequence_count
-            print(
-                f"⚠️ Not enough real sequences for '{action}' ({sequence_count}), generating {num_augmentations} augmentations..."
-            )
+            print(f"Generating {num_augmentations} augmentations...")
+
+            # Get existing sequence directories
             existing_dirs = [
-                os.path.join(DATA_PATH, action, str(i)) for i in range(sequence_count)
+                d
+                for d in os.listdir(os.path.join(DATA_PATH, action))
+                if os.path.isdir(os.path.join(DATA_PATH, action, d))
             ]
 
             for aug_idx in range(num_augmentations):
-                # Cycle through the collected sequences for augmentation
-                base_dir = existing_dirs[aug_idx % len(existing_dirs)]
+                # Randomly select base sequence
+                base_dir = os.path.join(
+                    DATA_PATH, action, np.random.choice(existing_dirs)
+                )
+
                 target_dir = os.path.join(
                     DATA_PATH, action, str(sequence_count + aug_idx)
                 )
-                augment_sequence(base_dir, target_dir)
-                print(
-                    f"✅ Augmented sequence {sequence_count + aug_idx + 1}/{no_sequences} created"
-                )
+
+                if augment_sequence(base_dir, target_dir):
+                    print(f"✅ Augmented sequence {sequence_count + aug_idx} created")
+                else:
+                    print(f"⚠️ Failed to augment sequence {sequence_count + aug_idx}")
 
 print("\n✅ All done! Dataset created under `MP_Data/`")
-total_sequences_collected = 0
-for act in target_actions:
-    action_path = os.path.join(DATA_PATH, act)
+
+# Final summary
+total_sequences = 0
+for action in target_actions:
+    action_path = os.path.join(DATA_PATH, action)
     if os.path.exists(action_path):
-        total_sequences_collected += len(os.listdir(action_path))
-print(f"Total sequences collected: {total_sequences_collected}")
+        count = len(
+            [
+                d
+                for d in os.listdir(action_path)
+                if os.path.isdir(os.path.join(action_path, d))
+            ]
+        )
+        total_sequences += count
+        print(f"{action}: {count} sequences")
+
+print(f"Total sequences collected: {total_sequences}")
+print(f"Handedness: {'Left' if is_left_handed else 'Right'}-handed")
